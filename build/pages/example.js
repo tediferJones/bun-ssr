@@ -1,13 +1,13 @@
 import {
 Layout
-} from "../chunk-c52e9b6c4ba6bb89.js";
+} from "../chunk-576b140a924b9591.js";
 import {
 __toESM,
 require_jsx_dev_runtime,
 require_react
-} from "../chunk-63abc4cc02303101.js";
+} from "../chunk-ba72fa687bba2094.js";
 
-// pagesmodules/scheduler/cjs/sched
+// pages/testes/scheduler/cjs/sched
 var import_react = __toESM(require_react(), 1);
 var jsx_dev_runtime = __toESM(require_jsx_dev_runtime(), 1);
 function TestComponent({ message }) {
@@ -43,7 +43,7 @@ function TestComponent({ message }) {
   }, undefined, true, undefined, this);
 }
 
-// pagesmodules/schedule
+// pages/testes/schedule
 var jsx_dev_runtime2 = __toESM(require_jsx_dev_runtime(), 1);
 function Example() {
   return jsx_dev_runtime2.jsxDEV(Layout, {

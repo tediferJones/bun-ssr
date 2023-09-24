@@ -3,6 +3,8 @@ import { renderToReadableStream } from 'react-dom/server';
 // EXAMPLE: https://www.npmjs.com/package/@bun-examples/react-ssr
 // [ THIS IS THE FIX ] Consider creating a layout file, maybe thats part of what is causing issues
 // Consider using tsconfig path aliases, make on for @root = './', @components = './src/components'
+//
+// DYNAMIC PAGES CANT LOAD PROPS ON CLIENT
 
 // All paths are based on the location of this file (the file that runs the server)
 const rootPath = import.meta.dir.replace('src', '');
@@ -34,6 +36,7 @@ const buildRouter = new Bun.FileSystemRouter({
   dir: rootPath + 'build/pages',
   style: 'nextjs',
 })
+// console.log(buildRouter)
 
 const apiRouter = new Bun.FileSystemRouter({
   dir: rootPath + 'src/apiRoutes',
@@ -55,19 +58,25 @@ const server = Bun.serve({
   async fetch(req) {
     const builtMatch = buildRouter.match(req)
     const apiMatch = apiRouter.match(req)
-    const srcMatch = srcRouter.match(req)
+    // const srcMatch = srcRouter.match(req)
+    // console.log(pages)
+    console.log(req.url)
 
-    if (srcMatch && builtMatch) {
+    if (builtMatch && builtMatch.pathname !== builtMatch.name + '.js') {
+    // if (builtMatch) {
       console.log('requesting page')
+      console.log("MATCHED PAGE")
+      console.log(builtMatch)
       // const stream = await renderToReadableStream(<PageToRender.default />, {
-      const stream = await renderToReadableStream(pages[builtMatch.pathname].default(), {
+      // const stream = await renderToReadableStream(<pages[builtMatch.name] />, {
+      const stream = await renderToReadableStream(pages[builtMatch.name].default({ params: builtMatch.params }), {
         bootstrapScriptContent: `globalThis.PATH_TO_PAGE = "/${builtMatch.src}";`,
         bootstrapModules: ['/hydrate.js'],
       });
 
       return new Response(stream);
     } else if (apiMatch) {
-      return apiRoutes[apiMatch.pathname][req.method](req)
+      return apiRoutes[apiMatch.name][req.method](req)
     } else {
       console.log(`REQUESTING FILE`)
 
