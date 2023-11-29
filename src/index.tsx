@@ -1,27 +1,35 @@
 import { renderToReadableStream } from 'react-dom/server';
+import db from 'database';
+import { BackendServers } from 'types';
 
-// EXAMPLE: https://www.npmjs.com/package/@bun-examples/react-ssr
-// [ THIS IS THE FIX ] Consider creating a layout file, maybe thats part of what is causing issues
-// Consider using tsconfig path aliases, make on for @root = './', @components = './src/components'
-//
-// DYNAMIC PAGES CANT LOAD PROPS ON CLIENT
+function cmdRun(cmd: string, currentDir?: string) {
+  Bun.spawnSync(cmd.split(' '), { cwd: currentDir});
+}
 
-// All paths are based on the location of this file (the file that runs the server)
+function newRouter(path: string) {
+  return new Bun.FileSystemRouter({
+    dir: rootPath + path,
+    style: 'nextjs',
+  });
+}
+
+function importPaths(paths: { [key: string]: string}): { [key: string]: any } {
+  const routes: { [key: string] : string } = {};
+  Object.keys(paths).forEach(async (path: string) => {
+    routes[path] = await import(paths[path]);
+  });
+  return routes;
+}
+
 const rootPath = import.meta.dir.replace('src', '');
 
-const srcRouter = new Bun.FileSystemRouter({
-  dir: rootPath + 'src/pages',
-  style: 'nextjs',
-})
-// console.log(srcRouter)
-// console.log(srcRouter.routes)
-// console.log(Object.values(srcRouter.routes))
+// Remove old build files if they exist
+cmdRun('rm -r build/', rootPath);
+// Generate necessary tailwind classes
+cmdRun('npx tailwindcss -i src/style.css -o public/style.css', rootPath);
 
-// Generate css file from tailwind classes
-Bun.spawn(['npx', 'tailwindcss', '-i', 'src/input.css', '-o', 'public/output.css'], {
-  cwd: rootPath,
-})
-
+const srcRouter = newRouter('src/pages');
+// Build files for client
 await Bun.build({
   entrypoints: [
     rootPath + 'src/hydrate.tsx',
@@ -30,83 +38,58 @@ await Bun.build({
   outdir: rootPath + 'build',
   target: 'browser',
   splitting: true,
-})
+});
+// Create final routers
+const pageRouter = newRouter('build/pages');
+const apiRouter = newRouter('src/apiRoutes');
 
-const buildRouter = new Bun.FileSystemRouter({
-  dir: rootPath + 'build/pages',
-  style: 'nextjs',
-})
-// console.log(buildRouter)
+// Import all needed routes when server starts, so we dont have dynamically reload each route
+const pageRoutes = importPaths(srcRouter.routes);
+const apiRoutes = importPaths(apiRouter.routes);
 
-const apiRouter = new Bun.FileSystemRouter({
-  dir: rootPath + 'src/apiRoutes',
-  style: 'nextjs',
-})
-// console.log(srcRouter)
+// Clean-up expired cookies, should run once per day
+setInterval(() => {
+  db.query('DELETE FROM sessions WHERE expiresAt < $expiresAt').run({ $expiresAt: Date.now() })
+}, 1000*60*60*24);
 
-const pages: { [key: string]: any } = {};
-Object.keys(srcRouter.routes).forEach(async (path) => {
-  pages[path] = await import(srcRouter.routes[path]);
-})
-const apiRoutes: { [key: string]: any } = {};
-Object.keys(apiRouter.routes).forEach(async (path) => {
-  apiRoutes[path] = await import(apiRouter.routes[path]);
-})
+// Initialize empty obj to keep track of active servers
+const servers: BackendServers = {};
 
+// Run server to serve HTML to user
 const server = Bun.serve({
-  port: 3000,
+  port: process.env.PORT || 3000,
+  development: process.env.PORT ? false : true,
   async fetch(req) {
-    const builtMatch = buildRouter.match(req)
-    const apiMatch = apiRouter.match(req)
-    // const srcMatch = srcRouter.match(req)
-    // console.log(pages)
-    console.log(req.url)
+    // console.log(req.method + ', ' + new URL(req.url).pathname)
+    const pageMatch = pageRouter.match(req);
+    const apiMatch = apiRouter.match(req);
 
-    if (builtMatch && builtMatch.pathname !== builtMatch.name + '.js') {
-    // if (builtMatch) {
-      console.log('requesting page')
-      console.log("MATCHED PAGE")
-      console.log(builtMatch)
-      // const stream = await renderToReadableStream(<PageToRender.default />, {
-      // const stream = await renderToReadableStream(<pages[builtMatch.name] />, {
-      const stream = await renderToReadableStream(pages[builtMatch.name].default({ params: builtMatch.params }), {
-        bootstrapScriptContent: `globalThis.PATH_TO_PAGE = "/${builtMatch.src}";`,
-        bootstrapModules: ['/hydrate.js'],
-      });
-
-      return new Response(stream);
-    } else if (apiMatch) {
-      return apiRoutes[apiMatch.name][req.method](req)
-    } else {
-      console.log(`REQUESTING FILE`)
-
-      let filePath = new URL(req.url).pathname;
-      console.log('FILE PATH')
-      console.log(filePath)
-      // Maybe rename to 'res'
-      let file;
-
-      const paths = [
-        (filePath: string) => rootPath + 'build/pages' + filePath,
-        (filePath: string) => rootPath + 'build' + filePath,
-        (filePath: string) => rootPath + 'public' + filePath,
-      ];
-      for (let i = 0; i < paths.length; i++) {
-        file = Bun.file(paths[i](filePath))
-        if (await file.exists()) {
-          break
+    if (pageMatch) {
+      return new Response(await renderToReadableStream(
+        pageRoutes[pageMatch.name].default({ params: pageMatch.params }), {
+          bootstrapScriptContent: `globalThis.PATH_TO_PAGE = "/${pageMatch.src}";`,
+          bootstrapModules: ['/hydrate.js'],
         }
-      }
-
-      // console.log(`file exists?: ${!!file}`)
-      if (file && !await file.exists()) {
-        return new Response(`Page ${filePath} not found`, { status: 404 })
-      }
-
-      // console.log(filePath)
-      return new Response(file)
+      ));
     }
+
+    if (apiMatch) {
+      const apiFunc = apiRoutes[apiMatch.name][req.method];
+      return apiFunc ? apiFunc(req, servers) : 
+        new Response(`API Route ${apiMatch.name} does not have a ${req.method} method`);
+    } 
+
+    const filePath = new URL(req.url).pathname;
+    const directoryOptions = ['build/pages', 'build', 'public'];
+    for (const dirOpt of directoryOptions) {
+      const file = Bun.file(rootPath + dirOpt + filePath);
+      if (await file.exists()) {
+        return new Response(file);
+      }
+    }
+
+    return new Response(JSON.stringify(`Page ${filePath} not found`), { status: 404 });
   }
-})
+});
 
 console.log(`Server is running on port ${server.port}`)
